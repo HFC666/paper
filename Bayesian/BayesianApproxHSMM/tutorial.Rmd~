@@ -1,0 +1,198 @@
+---
+title: "BayesApproxHSMM - Tutorial"
+author: "Beniamino Hadj-Amar and Jack Jewson"
+date: "03/06/2020"
+output: html_document
+---
+
+
+---
+This R markdown file is part of the supplementary material to the paper 
+
+      'Bayesian Approximations to Hidden Semi-Markov Models' (2020)
+                by B.Hadj-Amar, J.Jewson and M.Fiecas. 
+
+Here, we generate data from a three state HSMM with Gaussian emission 
+and Poisson dwell durations.Estimation procedures are carried out us-
+ing both frequentist (EM) and Bayesian approaches, where we validate 
+each model using several diagnostic tools. We also illustrate the use 
+of Bayes factors for model selection between the proposed approach and
+the HMM.
+---
+
+
+
+## Set up
+
+```{r set_up, include=TRUE, echo=FALSE, eval=TRUE, cache=TRUE, results='hide'}
+
+library("miceadds")
+library("rstan")
+library("bayesplot")
+library("bridgesampling")
+library("matrixStats")
+library("lubridate")
+
+# (your current directory must contain both /stan and /include)
+setwd("/Users/beniamino/Desktop/HSMM_Project/Final/")
+source.all("include/")
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+
+# --------------- Data Generation 
+
+```{r data_generation, include=TRUE,echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+
+# -- Parameterization
+
+N <- 200  # length time series
+parms <- list()
+parms$K <- 3  # n. states
+parms$lambda <- c(20, 30, 20) # poisson duration rate
+parms$mu <- c(5, 14, 30)  # emission parameter - mean
+parms$sigma <- c(1, 1, 1) # emission parameters - sd
+parms$gamma <- matrix(c(0, 0.3, 0.7,
+                        0.2, 0, 0.8,
+                        0.1, 0.9, 0), parms$K, parms$K, byrow = T) #  t.p.m
+parms$delta <- c(1.0, 0.0, 0.0) # initial dstr
+
+# - Simulate data
+
+set.seed(5)
+simul <- gauss.HSMM.generate_sample(N, parms)
+obs <- simul$obs
+state <- simul$state
+plot(obs, col = state, cex = 0.7, pch = 20, type = "o")
+
+```
+
+
+
+
+# ------------ HSSM approx - Expectation/Conditional Maximization (ECM)
+
+```{r ECM, include=TRUE, echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+
+K <- 3 # n states
+m <- rep(5, K) # dwell threshold
+lambda.0 <- rep(5, K) # lambda initial value 
+parms.0 <- HSMM.init(obs, K, lambda.0) # emission initial values
+# (different initial values may be required for convergence)
+HSMM.ECM.fit <- HSMM.ECM(K = K, m = m, obs = obs, parms_init = parms.0, niter = 1e2)
+cat("mllk:", HSMM.ECM.fit$mllk, " AIC:", HSMM.ECM.fit$AIC, " BIC:", HSMM.ECM.fit$BIC, "\n")
+```
+
+```{r ECM_out, include=TRUE, echo=TRUE, eval=TRUE, cache=TRUE, results='hide'}
+# psuedo residuals + most likely state sequence (viterbi)
+HSMM.pseudo_residuals(obs, m, HSMM.ECM.fit$lambda, 
+                      HSMM.ECM.fit$mu, HSMM.ECM.fit$sigma, 
+                      HSMM.ECM.fit$gamma, plt = TRUE)
+HSMM.viterbi(obs, m, HSMM.ECM.fit$lambda, HSMM.ECM.fit$mu, HSMM.ECM.fit$sigma,
+             HSMM.ECM.fit$gamma, plt = TRUE)
+```
+
+
+# --------------- HSMM approx -  Bayesian Model 
+
+```{r Bayesian_hsmm_hmm_fit, include=TRUE,echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+K <- 3 # n states 
+m <- rep(5, K) # dwell threshold
+lambda.0 <- rep(10, K) # lambda initial value MCMC
+data.stan <- list(N = length(obs), K = K, y = obs,
+                  m = m,  mu_0 = rep(mean(obs), K), 
+                  sigma_0 = 2, a_0 = rep(0.01, K), b_0 = rep(0.01, K),
+                  alpha_0 = matrix(1, nrow = K, ncol = K-1))
+
+if ((K / sum(m) < 0.1)) {
+  stan_path <- "stan/bayesHSMMapprox_GaussEmis_PoissDur.stan"
+} else {
+  stan_path <- "stan/bayesHSMMapprox_GaussEmis_PoissDur_sparse.stan"
+}
+HSMM.stan <- stan(file = stan_path, data = data.stan, 
+                 init = function(){HSMM.init.stan(K, obs, lambda.0)}, 
+                 warmup = 1000, chains = 1, iter = (1+5)*1000, cores = 1, 
+                 control = list(adapt_delta=0.99,stepsize=0.01,max_treedepth = 20))
+print(HSMM.stan, probs = c(0.05, 0.95))
+```
+
+```{r bayes_out, include=TRUE, echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+
+# --- extracting samples 
+sims <- extract(HSMM.stan)
+lambda_sims <- sims$lambda
+mu_sims <- sims$mu
+sigma_sims <- sqrt(sims$sigma2)
+gamma_sims <- get.gamma_sims(sims$gamma)
+
+# --- bayes estimates
+lambda.hat <- colMeans(lambda_sims)
+mu.hat <- colMeans(mu_sims)
+sigma.hat <- colMeans(sigma_sims)
+gamma.hat <- apply(gamma_sims, c(1, 2), mean)
+```
+
+
+```{r bayes_diag, include=TRUE, echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+# --- trace plots + hist transitions
+mcmc_trace(as.array(HSMM.stan), regex_pars = "gamma")
+mcmc_trace(as.array(HSMM.stan), regex_pars = "mu")
+mcmc_trace(as.array(HSMM.stan), regex_pars = "sigma2")
+mcmc_trace(as.array(HSMM.stan), regex_pars = "lambda")
+HSMM.transitions.hist(gamma_sims)
+```
+
+
+
+```{r bayes_diag, include=TRUE, echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+# psuedo residuals + most likely state sequence (viterbi)
+HSMM.pseudo_residuals(obs, m, lambda.hat, mu.hat, sigma.hat, gamma.hat, plt = TRUE)
+HSMM.viterbi(obs, m, lambda.hat, mu.hat, sigma.hat,gamma.hat, draw = FALSE, plt = TRUE) 
+```
+
+
+```{r bayes_diag, include=TRUE, echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+# -- posterior predictive plot check
+HSMM.predictive.plot(sims, obs, m, ndraw = 50)
+```
+
+
+```{r bayes_diag, include=TRUE, echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+# --- predictive performances
+HSMM.performance <- HSMM.stan.performance(sims, obs, m)
+HSMM.performance
+```
+
+
+# ------------ HMM standard  - Bayes  
+
+```{r bayes_mu, include=TRUE, echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+
+K <- 3
+HMM.data <- list(N = length(obs), K = K, y = obs, 
+                 mu_0 = rep(mean(obs), K), sigma_0 = 2, 
+                 alpha_0 = matrix(c(rep(1, K*K)), nrow = K, ncol = K, byrow = TRUE))
+HMM.stan <- stan(file = "stan/bayesHMM_GaussEmis.stan", data = HMM.data,
+                 warmup = 1000, iter=(1+5)*1000, chains=1, cores=1)
+print(HMM.stan, probs = c(0.05, 0.95))
+```
+
+
+# ------------ Model Selection, Bayes Factors ------
+
+```{r bridge, include=TRUE,echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+# bridge sampler
+HSMM.bridge <- bridge_sampler(HSMM.stan)
+HMM.bridge <- bridge_sampler(HMM.stan)
+```
+
+```{r Bayes_Factor, include=TRUE,echo=TRUE, eval=TRUE,cache=TRUE,results='hide'}
+# bayes factor
+HSMM.marg_llk <- HSMM.bridge$logml
+HMM.marg_llk <- HMM.bridge$logml
+exp(HSMM.marg_llk - HMM.marg_llk)
+```
+
+
