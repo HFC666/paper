@@ -473,7 +473,7 @@ p(\theta_2\mid \theta_1) &= \int_Gp(\theta_2,G\mid \theta_1)dG\\
 &= \int_Gp(\theta_2\mid G)p(G\mid \theta_1)dG
 \end{aligned}
 $$
-我们一营知道在给定$\theta_1$下的后验分布：
+我们一定知道在给定$\theta_1$下的后验分布：
 $$
 G\mid \theta_1 \sim \text{DP}(\alpha+1, \frac{\alpha H+\delta_{\theta_1}}{\alpha + 1})
 $$
@@ -552,5 +552,4 @@ $$
 $$
 p(x_i\mid \mathrm{x}_{-i},z_i = k,\mathrm{z}_{-i},\mathrm{\nu}) = \frac{p(x_i,\mathrm{x}_{-i}^{(k)}\mid \mathrm{\nu})}{p(\mathrm{x}_{-i}^{(k)}\mid \mathrm{\nu})}
 $$
-
 
